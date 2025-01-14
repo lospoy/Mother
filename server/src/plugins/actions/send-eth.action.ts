@@ -14,57 +14,18 @@ import { CollabLandBaseAction } from "./collabland.action.js";
 import { randomUUID } from "crypto";
 import { chainMap } from "../../utils.js";
 import { CollabLandWalletBalanceProvider } from "../providers/collabland-wallet-balance.provider.js";
-import { ethers } from "ethers";
+import { ethers, parseEther } from "ethers";
+import {
+  BotAccountMemory,
+  ExecuteUserOpResponse,
+  UserOperationReceipt,
+} from "../types.js";
 
 // User: Hi
 // Agent: Hello, I'm a blockchain assistant, what chain would you want to look into?
 // User: Let's do linea
 // Agent: Okay, linea
 // ...
-
-type ExecuteUserOpResponse = {
-  userOperationHash: string;
-  chainId: number;
-};
-
-interface TransactionReceipt {
-  transactionHash?: string;
-  transactionIndex?: number;
-  blockHash?: string;
-  blockNumber?: number;
-  from?: string;
-  to?: string;
-  cumulativeGasUsed?: number;
-  status?: string;
-  gasUsed?: number;
-  contractAddress?: string | null;
-  logsBloom?: string;
-  effectiveGasPrice?: number;
-}
-
-interface Log {
-  data?: string;
-  blockNumber?: number;
-  blockHash?: string;
-  transactionHash?: string;
-  logIndex?: number;
-  transactionIndex?: number;
-  address?: string;
-  topics?: string[];
-}
-
-interface UserOperationReceipt {
-  userOpHash?: string;
-  entryPoint?: string;
-  sender?: string;
-  nonce?: number;
-  paymaster?: string;
-  actualGasUsed?: number;
-  actualGasCost?: number;
-  success?: boolean;
-  receipt?: TransactionReceipt;
-  logs?: Log[];
-}
 
 const extractChainTemplate = `Respond with a JSON markdown block containing only the extracted values. Use null for any values that cannot be determined.
 
@@ -159,18 +120,23 @@ export class SendETHAction extends CollabLandBaseAction {
           return false;
         }
 
-        let account = null;
+        console.log("[SendETHAction] chainId", chainId);
+
+        let account: BotAccountMemory | null = null;
         for (const memory of onChainMemories) {
           if (
             memory.content.smartAccount &&
-            memory.content.chainId === chainId
+            memory.content.type === "evm" && // Has to be EVM for sending ETH
+            memory.content.chainId == chainId
           ) {
-            account = memory.content;
+            account = memory.content as unknown as BotAccountMemory;
+            console.log("[SendETHAction] account found", account);
             break;
           }
         }
 
         if (!account?.smartAccount) {
+          console.log("[SendETHAction] account not found");
           _callback?.({
             text: "I cannot proceed because I can't determine my account. Can you help me with which chain you want me to send ETH to?",
             action: "GET_SMART_ACCOUNT",
@@ -204,6 +170,14 @@ export class SendETHAction extends CollabLandBaseAction {
           runtime: _runtime,
         });
         console.log("[SendETHAction] extractedFundData", extractedFundData);
+        //FIXME: Need to double-check canFund, since the AI can hallucinate
+        if (extractedFundData.canFund === false) {
+          const _canFund =
+            BigInt(parseEther(balance)) >=
+            BigInt(parseEther(extractedFundData.amount));
+          console.log("[SendETHAction] _canFund", _canFund);
+          extractedFundData.canFund = _canFund;
+        }
         if (
           !extractedFundData.canFund ||
           !extractedFundData.amount ||
@@ -230,7 +204,6 @@ export class SendETHAction extends CollabLandBaseAction {
           },
           createdAt: Date.now(),
           embedding: getEmbeddingZeroVector(),
-          unique: true,
         };
         console.log(
           "[SendETHAction] creating fundIntentMemory",
@@ -240,7 +213,7 @@ export class SendETHAction extends CollabLandBaseAction {
 
         console.log("Hitting Collab.Land APIs to submit user operation...");
         const payload = {
-          contractAddress: extractedFundData.account,
+          target: extractedFundData.account,
           value:
             "0x" + ethers.parseEther(extractedFundData.amount).toString(16),
           calldata: "",
@@ -248,7 +221,7 @@ export class SendETHAction extends CollabLandBaseAction {
         console.log("[SendETHAction] payload", payload);
         const { data: _resData } =
           await this.client.post<ExecuteUserOpResponse>(
-            `/telegrambot/submitUserOperation?chainId=${chainId}`,
+            `/telegrambot/evm/submitUserOperation?chainId=${chainId}`,
             payload,
             {
               headers: {
@@ -277,7 +250,7 @@ export class SendETHAction extends CollabLandBaseAction {
             status: "PENDING",
           },
         };
-        await onChainMemoryManager.createMemory(fundPendingMemory, true);
+        await onChainMemoryManager.createMemory(fundPendingMemory);
         _callback?.({
           text: `Your request to send ${extractedFundData.amount} ETH to ${extractedFundData.account} has been sent from my account ${account.smartAccount} on ${chain}.\nStatus: Pending\nUser Operation Hash: ${_resData.userOperationHash}`,
         });
@@ -286,7 +259,7 @@ export class SendETHAction extends CollabLandBaseAction {
         );
         const { data: _userOpReceiptData } =
           await this.client.get<UserOperationReceipt>(
-            `/telegrambot/userOperationReceipt?chainId=${_resData.chainId}&userOperationHash=${_resData.userOperationHash}`,
+            `/telegrambot/evm/userOperationReceipt?chainId=${_resData.chainId}&userOperationHash=${_resData.userOperationHash}`,
             {
               headers: {
                 "Content-Type": "application/json",
@@ -301,22 +274,25 @@ export class SendETHAction extends CollabLandBaseAction {
           _userOpReceiptData
         );
         await onChainMemoryManager.removeMemory(fundPendingMemory.id!);
-        await onChainMemoryManager.createMemory({
-          id: randomUUID(),
-          agentId: _message.agentId,
-          userId: _message.userId,
-          roomId: _message.roomId,
-          content: {
-            text: "",
-            chain: chain,
-            account: extractedFundData.account,
-            amount: extractedFundData.amount,
-            canFund: extractedFundData.canFund,
-            userOpHash: _resData.userOperationHash,
-            txHash: _userOpReceiptData.receipt?.transactionHash,
-            status: "EXECUTED",
+        await onChainMemoryManager.createMemory(
+          {
+            id: randomUUID(),
+            agentId: _message.agentId,
+            userId: _message.userId,
+            roomId: _message.roomId,
+            content: {
+              text: "",
+              chain: chain,
+              account: extractedFundData.account,
+              amount: extractedFundData.amount,
+              canFund: extractedFundData.canFund,
+              userOpHash: _resData.userOperationHash,
+              txHash: _userOpReceiptData.receipt?.transactionHash,
+              status: "EXECUTED",
+            },
           },
-        });
+          true
+        );
         _callback?.({
           text: `Your request to send ${extractedFundData.amount} ETH to ${extractedFundData.account} has been sent from my account ${account.smartAccount} on ${chain}.\nStatus: Executed\nUser Operation Hash: ${_userOpReceiptData.userOpHash}\nTransaction Hash: ${_userOpReceiptData.receipt?.transactionHash}`,
         });

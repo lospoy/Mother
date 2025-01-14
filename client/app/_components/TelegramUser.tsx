@@ -12,25 +12,26 @@ interface TelegramUser {
   hash: string;
 }
 
-export default function HelloWorld() {
+export default function TelegramUser() {
   const [user, setUser] = useState<TelegramUser | null>(null);
 
   const handleTelegramAuth = (telegramUser: TelegramUser) => {
-    console.log('Telegram auth successful:', telegramUser);
+    console.log("Telegram auth successful:", telegramUser);
     setUser(telegramUser);
   };
 
   return (
-    <div className="flex flex-col items-center w-full space-y-4">
-
+    <div className="flex flex-col items-center w-full space-y-4 my-4">
       {!user ? (
-        <TelegramLoginButton 
-          botName={process.env.NEXT_PUBLIC_TELEGRAM_BOT_NAME || 'CollabathonBot'} 
+        <TelegramLoginButton
+          botName={
+            process.env.NEXT_PUBLIC_TELEGRAM_BOT_NAME || "CollabathonBot"
+          }
           onAuth={handleTelegramAuth}
         />
       ) : (
         <div className="text-green-500">
-          Welcome, {user.first_name}!
+          Welcome, Telegram User {user.first_name}!
         </div>
       )}
     </div>

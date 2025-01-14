@@ -1,4 +1,4 @@
-import { AnyType } from "@/utils.js";
+import { AnyType, getCollablandApiUrl } from "../../utils.js";
 import { Action, ActionExample, Validator, Handler } from "@ai16z/eliza";
 import axios, { AxiosInstance } from "axios";
 
@@ -21,7 +21,7 @@ export abstract class CollabLandBaseAction implements Action {
     this.validate = validate;
 
     this.client = axios.create({
-      baseURL: "https://api-qa.collab.land/accountkit",
+      baseURL: getCollablandApiUrl(),
       headers: {
         "X-API-KEY": process.env.COLLABLAND_API_KEY || "",
         "X-TG-BOT-TOKEN": process.env.TELEGRAM_BOT_TOKEN || "",
@@ -32,6 +32,7 @@ export abstract class CollabLandBaseAction implements Action {
   }
 
   protected handleError(error: AnyType): void {
+    console.log(error);
     if (axios.isAxiosError(error)) {
       console.dir(error.response?.data, { depth: null });
       throw new Error(
